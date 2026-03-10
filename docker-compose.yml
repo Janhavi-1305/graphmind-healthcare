@@ -1,0 +1,198 @@
+version: '3.9'
+
+services:
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5.13-community
+    container_name: graphmind-neo4j
+    ports:
+      - "7474:7474"      # Neo4j Browser
+      - "7687:7687"      # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+    volumes:
+      - neo4j_data:/var/lib/neo4j/data
+      - neo4j_logs:/var/lib/neo4j/logs
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - graphmind
+
+  # PostgreSQL Relational Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: graphmind-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: graphmind_user
+      POSTGRES_PASSWORD: graphmind_password
+      POSTGRES_DB: graphmind
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graphmind_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - graphmind
+
+  # MongoDB NoSQL Database
+  mongodb:
+    image: mongo:7.0
+    container_name: graphmind-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: graphmind_password
+      MONGO_INITDB_DATABASE: graphmind
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - graphmind
+
+  # Milvus Vector Database
+  milvus:
+    image: milvusdb/milvus:v2.3.4
+    container_name: graphmind-milvus
+    ports:
+      - "19530:19530"    # Milvus service
+      - "9091:9091"      # Metrics
+    environment:
+      COMMON_STORAGETYPE: local
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - graphmind
+
+  # Milvus Dependencies: etcd
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: graphmind-etcd
+    ports:
+      - "2379:2379"
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - graphmind
+
+  # Milvus Dependencies: MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: graphmind-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - graphmind
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: graphmind-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Neo4j
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      
+      # PostgreSQL
+      DATABASE_URL: postgresql://graphmind_user:graphmind_password@postgres:5432/graphmind
+      
+      # MongoDB
+      MONGODB_URL: mongodb://root:graphmind_password@mongodb:27017/
+      MONGODB_DB: graphmind
+      
+      # Milvus
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      
+      # LLM (set via .env file)
+      LLM_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LLM_MODEL: claude-3-5-sonnet-20241022
+      
+      # App
+      DEBUG: "false"
+      ENVIRONMENT: development
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+    networks:
+      - graphmind
+    command: python backend/main.py
+
+  # React Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: graphmind-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - graphmind
+    command: npm run dev
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  postgres_data:
+  mongodb_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
+
+networks:
+  graphmind:
+    driver: bridge
