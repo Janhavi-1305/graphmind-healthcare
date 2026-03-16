@@ -4,10 +4,55 @@ Utility modules for GraphMind Healthcare system
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import uuid
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+
+
+class EmbeddingService:
+    """Service for generating embeddings using sentence-transformers"""
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        """Initialize embedding service with a model"""
+        self.model_name = model_name
+        self.model = SentenceTransformer(model_name)
+        self.cache = {}  # Simple in-memory cache
+    
+    def embed(self, text: str) -> List[float]:
+        """Generate embedding for a single text"""
+        if text in self.cache:
+            return self.cache[text]
+        
+        embedding = self.model.encode(text).tolist()
+        self.cache[text] = embedding
+        return embedding
+    
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for multiple texts"""
+        embeddings = []
+        texts_to_encode = []
+        indices_to_encode = []
+        
+        for i, text in enumerate(texts):
+            if text in self.cache:
+                embeddings.append(self.cache[text])
+            else:
+                texts_to_encode.append(text)
+                indices_to_encode.append(i)
+        
+        if texts_to_encode:
+            batch_embeddings = self.model.encode(texts_to_encode).tolist()
+            for text, embedding in zip(texts_to_encode, batch_embeddings):
+                self.cache[text] = embedding
+        
+        return embeddings
+    
+    def clear_cache(self):
+        """Clear embedding cache"""
+        self.cache.clear()
+
 
 
 class TimeUtils:

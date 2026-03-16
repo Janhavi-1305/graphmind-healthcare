@@ -29,7 +29,7 @@ from models import (
     ChatRequest, ChatResponse, MindmapResponse
 )
 from routes import memory, chat, health, auth
-from services.audit import AuditLogger
+from utils.embeddings import AuditLogger
 
 # Configure logging
 logging.basicConfig(

@@ -14,8 +14,7 @@ from datetime import datetime
 import uuid
 
 # Neo4j
-from neo4j import AsyncDriver, AsyncSession
-from neo4j import asyncio as neo4j_asyncio
+from neo4j import AsyncDriver, AsyncSession, AsyncGraphDatabase
 
 # PostgreSQL
 import asyncpg
@@ -23,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession as SQLSession
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 
 # MongoDB
-from motor.motor_asyncio import AsyncClient, AsyncDatabase
+from motor.motor_asyncio import AsyncIOMotorClient as AsyncClient
+from motor.motor_asyncio import AsyncIOMotorDatabase as AsyncDatabase
 import pymongo
 
 # Milvus
@@ -104,14 +104,40 @@ class DatabaseManager:
     
     async def _init_neo4j(self):
         """Initialize Neo4j connection"""
-        self.neo4j_driver = neo4j_asyncio.AsyncGraphDatabase.driver(
-            self.neo4j_uri,
+
+        async def _test_driver(driver):
+            async with driver.session() as session:
+                await session.run("RETURN 1")
+
+        # Try connecting using configured URI first.
+        try:
+            self.neo4j_driver = AsyncGraphDatabase.driver(
+                self.neo4j_uri,
+                auth=(self.neo4j_user, self.neo4j_password),
+                max_connection_pool_size=50,
+            )
+            await _test_driver(self.neo4j_driver)
+            return
+        except Exception as e:
+            logger.warning(
+                "Failed to connect to Neo4j using %s: %s",
+                self.neo4j_uri,
+                e,
+            )
+
+        # As a fallback, try the bolt:// scheme (common for single-instance Neo4j)
+        if self.neo4j_uri.startswith("neo4j://"):
+            fallback_uri = self.neo4j_uri.replace("neo4j://", "bolt://", 1)
+        else:
+            fallback_uri = self.neo4j_uri
+
+        logger.info("Trying Neo4j fallback URI: %s", fallback_uri)
+        self.neo4j_driver = AsyncGraphDatabase.driver(
+            fallback_uri,
             auth=(self.neo4j_user, self.neo4j_password),
             max_connection_pool_size=50,
         )
-        # Test connection
-        async with self.neo4j_driver.session() as session:
-            await session.run("RETURN 1")
+        await _test_driver(self.neo4j_driver)
     
     async def get_neo4j_session(self) -> AsyncSession:
         """Get Neo4j session"""
